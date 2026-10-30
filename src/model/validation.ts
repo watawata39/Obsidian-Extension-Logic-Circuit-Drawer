@@ -1,4 +1,6 @@
-import type { CircuitData, CircuitEdge, CircuitNode, NodeType } from './types';
+import type { BlockPin, CircuitData, CircuitEdge, CircuitNode, ControlPin, NodeType, SequentialOptions } from './types';
+import { isFlipFlop, isGateType, isSequential, MAX_PIN_LABEL_LENGTH, MAX_PINS, pinsFor, SEQUENTIAL_TYPES } from './components';
+export { pinsFor } from './components';
 
 export const MIN_SCALE = 0.25;
 export const MAX_SCALE = 3;
@@ -7,16 +9,11 @@ export const MAX_LABEL_LENGTH = 200;
 export const MAX_POSITION = 10_000;
 export const MAX_NODES = 1_000;
 export const MAX_EDGES = 5_000;
-const NODE_TYPES: readonly string[] = ['and', 'or', 'not', 'nand', 'nor', 'xor', 'xnor', 'input', 'output', 'junction'];
+const LEGACY_NODE_TYPES: readonly string[] = ['and', 'or', 'not', 'nand', 'nor', 'xor', 'xnor', 'input', 'output', 'junction'];
+const NODE_TYPES: readonly string[] = [...LEGACY_NODE_TYPES, ...SEQUENTIAL_TYPES, 'custom'];
 
 export class CircuitValidationError extends Error {
 	constructor(message: string) { super(message); this.name = 'CircuitValidationError'; }
-}
-
-export function pinsFor(type: NodeType): { inputs: string[]; outputs: string[] } {
-	if (type === 'input') return { inputs: [], outputs: ['out'] };
-	if (type === 'output') return { inputs: ['in-1'], outputs: [] };
-	return { inputs: type === 'not' || type === 'junction' ? ['in-1'] : ['in-1', 'in-2'], outputs: ['out'] };
 }
 
 function fail(message: string): never { throw new CircuitValidationError(message); }
@@ -44,18 +41,79 @@ function coordinate(value: unknown, name: string): number {
 	return result;
 }
 
-function node(value: unknown): CircuitNode {
+function text(value: unknown, name: string, maximum: number): string {
+	if (typeof value !== 'string' || value.length > maximum) fail(`${name} must be text of at most ${maximum} characters.`);
+	return value;
+}
+
+function boolean(value: unknown, name: string): boolean {
+	if (typeof value !== 'boolean') fail(`${name} must be true or false.`);
+	return value;
+}
+
+function customPins(value: unknown): { inputs: BlockPin[]; outputs: BlockPin[] } {
+	const item = record(value, 'Custom block pins', ['inputs', 'outputs']);
+	const seen = new Set<string>();
+	const list = (value: unknown): BlockPin[] => {
+		if (!Array.isArray(value) || value.length > MAX_PINS) fail(`Custom block pin lists must contain at most ${MAX_PINS} pins.`);
+		return value.map(value => {
+			const pin = record(value, 'Pin', ['id', 'label']);
+			const pinId = id(pin.id, 'Pin ID');
+			if (seen.has(pinId)) fail('Pin identifiers must be unique within a block.');
+			seen.add(pinId);
+			return { id: pinId, label: text(pin.label, 'Pin label', MAX_PIN_LABEL_LENGTH) };
+		});
+	};
+	const result = { inputs: list(item.inputs), outputs: list(item.outputs) };
+	if (!result.inputs.length && !result.outputs.length) fail('Custom blocks must have at least one input or output pin.');
+	return result;
+}
+
+function sequentialOptions(value: unknown, type: NodeType): SequentialOptions {
+	if (!isSequential(type)) fail('Only latches and flip-flops can have sequential options.');
+	const item = record(value, 'Sequential options', ['showInvertedOutput', 'clockEdge', 'enableActiveLow', 'preset', 'clear']);
+	const result: SequentialOptions = {};
+	if ('showInvertedOutput' in item) result.showInvertedOutput = boolean(item.showInvertedOutput, 'Inverted output visibility');
+	if ('clockEdge' in item) {
+		if (!isFlipFlop(type)) fail('Only flip-flops can have a clock edge.');
+		if (item.clockEdge !== 'rising' && item.clockEdge !== 'falling') fail('Clock edge must be rising or falling.');
+		result.clockEdge = item.clockEdge;
+	}
+	if ('enableActiveLow' in item) {
+		if (type !== 'd-latch') fail('Only D latches can have an enable polarity.');
+		result.enableActiveLow = boolean(item.enableActiveLow, 'Enable polarity');
+	}
+	const control = (value: unknown): ControlPin => {
+		if (!isFlipFlop(type)) fail('Only flip-flops can have preset and clear/reset pins.');
+		const pin = record(value, 'Control pin', ['label', 'activeLow']);
+		return { label: text(pin.label, 'Control pin label', MAX_PIN_LABEL_LENGTH), activeLow: boolean(pin.activeLow, 'Control pin polarity') };
+	};
+	if ('preset' in item) result.preset = control(item.preset);
+	if ('clear' in item) result.clear = control(item.clear);
+	return result;
+}
+
+export function validateNode(value: unknown, version: 1 | 2): CircuitNode {
 	const name = 'Node';
-	const item = record(value, name, ['id', 'type', 'position', 'label']);
-	if (typeof item.type !== 'string' || !NODE_TYPES.includes(item.type)) fail(`${name} has an unsupported type.`);
+	const item = record(value, name, version === 1 ? ['id', 'type', 'position', 'label'] : ['id', 'type', 'position', 'label', 'inputCount', 'pins', 'sequential']);
+	if (typeof item.type !== 'string' || !(version === 1 ? LEGACY_NODE_TYPES : NODE_TYPES).includes(item.type)) fail(`${name} has an unsupported type.`);
 	const type = item.type as NodeType;
 	const position = record(item.position, `${name} position`, ['x', 'y']);
 	const result: CircuitNode = { id: id(item.id, `${name} ID`), type, position: { x: coordinate(position.x, `${name} x`), y: coordinate(position.y, `${name} y`) } };
 	if (Object.prototype.hasOwnProperty.call(item, 'label')) {
-		if (type !== 'input' && type !== 'output') fail(`${name}: only Input and Output terminals can have labels.`);
-		if (typeof item.label !== 'string' || item.label.length > MAX_LABEL_LENGTH) fail(`${name} label must be text of at most ${MAX_LABEL_LENGTH} characters.`);
-		result.label = item.label;
+		if (type !== 'input' && type !== 'output' && type !== 'custom') fail(`${name}: only Input and Output terminals and custom blocks can have labels.`);
+		result.label = text(item.label, `${name} label`, MAX_LABEL_LENGTH);
 	}
+	if ('inputCount' in item) {
+		if (!isGateType(type) || type === 'not') fail('Only gates with multiple inputs can have an input count.');
+		if (typeof item.inputCount !== 'number' || !Number.isInteger(item.inputCount) || item.inputCount < 2 || item.inputCount > MAX_PINS) fail(`Gate input count must be a whole number between 2 and ${MAX_PINS}.`);
+		result.inputCount = item.inputCount;
+	}
+	if ('pins' in item || type === 'custom') {
+		if (type !== 'custom') fail('Only custom blocks can have configurable pin lists.');
+		result.pins = customPins(item.pins);
+	}
+	if ('sequential' in item) result.sequential = sequentialOptions(item.sequential, type);
 	return result;
 }
 
@@ -86,8 +144,8 @@ export function validateConnections(data: CircuitData): void {
 		// every other wire. Junction-only cycles are checked separately below.
 		if (source.type === 'output') fail('An Output node cannot start a connection.');
 		if (target.type === 'input') fail('An output pin cannot be connected to an Input node.');
-		if (!pinsFor(source.type).outputs.includes(wire.sourcePinId)
-			|| !pinsFor(target.type).inputs.includes(wire.targetPinId)) fail('Connect an output pin to an input pin.');
+		if (!pinsFor(source).outputs.includes(wire.sourcePinId)
+			|| !pinsFor(target).inputs.includes(wire.targetPinId)) fail('Connect an output pin to an input pin.');
 		const connectionKey = JSON.stringify([source.id, wire.sourcePinId, target.id, wire.targetPinId]);
 		if (connections.has(connectionKey)) fail('This connection already exists.');
 		connections.add(connectionKey);
@@ -118,9 +176,9 @@ export function validateConnections(data: CircuitData): void {
 
 export function validateCircuit(value: unknown): CircuitData {
 	const item = record(value, 'Circuit', ['schemaVersion', 'circuitId', 'nodes', 'edges', 'view']);
-	if (item.schemaVersion !== 1) {
+	if (item.schemaVersion !== 1 && item.schemaVersion !== 2) {
 		const version = typeof item.schemaVersion === 'number' && Number.isFinite(item.schemaVersion) ? `: ${item.schemaVersion}` : '';
-		fail(`Unsupported circuit schema version${version}. This plugin supports version 1.`);
+		fail(`Unsupported circuit schema version${version}. This plugin supports versions 1 and 2.`);
 	}
 	if (!Array.isArray(item.nodes)) fail('Circuit nodes must be an array.');
 	if (!Array.isArray(item.edges)) fail('Circuit wires must be an array.');
@@ -129,7 +187,8 @@ export function validateCircuit(value: unknown): CircuitData {
 	const view = record(item.view, 'Circuit view', ['preferredScale']);
 	const preferredScale = finite(view.preferredScale, 'Circuit scale');
 	if (preferredScale < MIN_SCALE || preferredScale > MAX_SCALE) fail(`Circuit scale must be between ${MIN_SCALE * 100}% and ${MAX_SCALE * 100}%.`);
-	const data: CircuitData = { schemaVersion: 1, circuitId: id(item.circuitId, 'Circuit ID'), nodes: item.nodes.map(node), edges: item.edges.map(edge), view: { preferredScale } };
+	const schemaVersion = item.schemaVersion;
+	const data: CircuitData = { schemaVersion, circuitId: id(item.circuitId, 'Circuit ID'), nodes: item.nodes.map(value => validateNode(value, schemaVersion)), edges: item.edges.map(edge), view: { preferredScale } };
 	validateConnections(data);
 	return data;
 }

@@ -1,4 +1,7 @@
-import type { CircuitData, CircuitNode, NodeType } from '../model/types';
+import type { CircuitData, CircuitNode, NodeShape, NodeType } from '../model/types';
+import { isBlockType, pinsFor } from '../model/components';
+import { blockGeometry } from './block-geometry';
+export { blockGeometry } from './block-geometry';
 import { routesForCircuit, routedWirePoints } from './wire-routing';
 export { wirePoints, routedWirePoints } from './wire-routing';
 
@@ -29,25 +32,30 @@ export function terminalGeometry(label = '') {
 	return { width, height: markerY + 8, labelHeight, labelTop, markerTop: markerY - 8, markerY, markerX: width / 2 };
 }
 
-export function sizeFor(node: Pick<CircuitNode, 'type' | 'label'>): Size {
+export function sizeFor(node: NodeShape): Size {
 	if (node.type === 'junction') return { width: 16, height: 16 };
-	if (node.type !== 'input' && node.type !== 'output') return { width: GATE_WIDTH, height: GATE_HEIGHT };
+	if (isBlockType(node.type)) { const { width, height } = blockGeometry(node); return { width, height }; }
+	if (node.type !== 'input' && node.type !== 'output') return { width: GATE_WIDTH, height: node.type === 'not' ? GATE_HEIGHT : pinsFor(node).inputs.length * 32 };
 	const { width, height } = terminalGeometry(node.label);
 	return { width, height };
 }
 
 /** One definition for SVG connector ends, Flow handles, routing and fit bounds. */
-export function localPinPoint(node: Pick<CircuitNode, 'type' | 'label'>, pin: string): Point {
+export function localPinPoint(node: NodeShape, pin: string): Point {
 	const size = sizeFor(node);
 	if (node.type === 'junction') return { x: 8, y: 8 };
 	if (node.type === 'input' || node.type === 'output') {
 		const geometry = terminalGeometry(node.label);
 		return { x: geometry.markerX + (pin === 'out' ? TERMINAL_PIN_OFFSET : -TERMINAL_PIN_OFFSET), y: geometry.markerY };
 	}
-	return {
-		x: pin === 'out' ? size.width : 0,
-		y: pin === 'out' || node.type === 'not' ? size.height / 2 : pin === 'in-1' ? 16 : 48,
-	};
+	const pins = pinsFor(node);
+	const source = pins.outputs.includes(pin);
+	if (isBlockType(node.type)) {
+		const geometry = blockGeometry(node);
+		const row = (source ? geometry.outputs : geometry.inputs).find(item => item.id === pin);
+		return { x: source ? size.width : 0, y: row?.y ?? size.height / 2 };
+	}
+	return { x: source ? size.width : 0, y: source || node.type === 'not' ? size.height / 2 : 16 + Math.max(0, pins.inputs.indexOf(pin)) * 32 };
 }
 
 export function pinPoint(node: CircuitNode, pin: string): Point {
@@ -58,9 +66,9 @@ export function pinPoint(node: CircuitNode, pin: string): Point {
 export function pinHitSize(scale: number): number { return Math.max(16, Math.min(32, 18 / scale)); }
 
 /** Flow attaches at the handle's left/right side, independently of its hit area. */
-export function pinAnchorFor(node: Pick<CircuitNode, 'type' | 'label'>, pin: string) {
+export function pinAnchorFor(node: NodeShape, pin: string) {
 	const point = localPinPoint(node, pin);
-	const source = pin === 'out';
+	const source = pinsFor(node).outputs.includes(pin);
 	return {
 		left: point.x - (source ? PIN_ANCHOR_SIZE : 0),
 		top: point.y - PIN_ANCHOR_SIZE / 2,
@@ -120,16 +128,17 @@ export function boundsFor(circuit: CircuitData) {
 export function snap(value: number): number { return Math.round(value / GRID) * GRID; }
 
 /** Snap the electrical reference point, rather than a label's outer bounds. */
-export function nodeSnapReference(node: Pick<CircuitNode, 'type' | 'label'>): Point {
+export function nodeSnapReference(node: NodeShape): Point {
 	if (node.type === 'junction') return { x: 8, y: 8 };
 	if (node.type === 'input' || node.type === 'output') {
 		const geometry = terminalGeometry(node.label);
 		return { x: geometry.markerX, y: geometry.markerY };
 	}
-	return { x: GATE_WIDTH / 2, y: GATE_HEIGHT / 2 };
+	const size = sizeFor(node);
+	return { x: size.width / 2, y: size.height / 2 };
 }
 
-export function snapNodePosition(node: Pick<CircuitNode, 'type' | 'label'>, position: Point): Point {
+export function snapNodePosition(node: NodeShape, position: Point): Point {
 	const reference = nodeSnapReference(node);
 	return { x: snap(position.x + reference.x) - reference.x, y: snap(position.y + reference.y) - reference.y };
 }

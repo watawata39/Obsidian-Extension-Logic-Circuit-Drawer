@@ -1,6 +1,6 @@
 # Inline logic circuit plugin design
 
-Status: agreed first-release design, with the macOS menu integration subject to a feasibility check.
+Status: implemented first-release design, extended by the component and configurable-pin update below. The update supersedes the first-release restrictions on supported objects, pin counts, labels, and schema versions.
 
 This document records the product behavior agreed during design discussion. It is a specification for implementation, not a statement that these features already exist. Numeric layout constants and the proposed JSON field names can be refined during implementation without changing the agreed interactions.
 
@@ -174,7 +174,7 @@ Input ─────●───── AND input
            └──── OR input
 ```
 
-Dropping on an existing junction reuses it. Reject invalid branches without leaving a partially split wire. Clicking a wire selects it; ordinary clicks and double-clicks do not create junctions.
+Dropping on an existing junction reuses it. Reject invalid branches without leaving a partially split wire. Single-clicking a wire or its hover handle selects and highlights the wire without a note edit. A placed junction dot is independently selectable and visibly highlighted for deletion. Distinguish a click from a drag on the hover handle, preserving drag-to-pin branch creation without treating a click as a failed drag. Double-clicking a wire while editing inserts a junction at the nearest snapped point on that wire, preserving upstream-to-downstream connectivity without adding a branch. This creates one saved undo step. A nearby endpoint junction is reused without another save. Double-clicking a finished diagram retains its editing entry behavior; Reading view remains display-only.
 
 ### Junction meaning
 
@@ -402,3 +402,32 @@ The grid, dimensions, live lower-boundary behavior, and 10-point scale steps are
 - [Obsidian developer policies](https://docs.obsidian.md/Developer+policies)
 - [Obsidian plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)
 - Project conventions: [AGENTS.md](AGENTS.md)
+
+
+## Component and configurable-pin update
+
+The editor remains diagram-only. Add SR and D latches, D/JK/T flip-flops, and custom rectangular blocks without nested circuits or simulation. Keep existing gates and terminals visually unchanged at their original pin counts.
+
+### Shared properties interaction
+
+A single selected configurable component exposes **Properties** in the toolbar and its element context menu. Double-clicking a configurable component body opens the same in-flow dialog. Custom center labels retain direct double-click editing. The dialog keeps a local draft with **Cancel**, **Apply**, and Escape cancellation. Valid changes update the visible circuit immediately, including connections, bounds, scale, symbols, and pin locations. Keep the original centered properties panel above the full-width diagram, with the input/output pin lists in columns where space permits. Update that diagram live without a separate preview title. Previews do not mutate the saved circuit, Markdown, or undo history. Invalid drafts display the original circuit. Cancel restores the original diagram; applying creates one undoable, saved action. Keep keyboard focus within the dialog while open and disable other circuit editing controls. Retain unapplied properties with the in-memory circuit session so native widget replacement cannot discard them; do not write these drafts to Markdown.
+
+### Gate input counts
+
+AND, NAND, OR, NOR, XOR, and XNOR accept 2–32 inputs; NOT stays at one. Keep existing input IDs (`in-1`, `in-2`, etc.) and append new IDs as counts grow. Removing inputs removes the highest-numbered pins. Grow symbols vertically using 32 model-unit pin spacing, with the output centered; redraw outlines without stretching stroke widths or inversion bubbles.
+
+### Sequential symbols
+
+Render rectangular presets with labeled inputs on the left and Q/Q̅ outputs on the right. Latch choices are SR and D; the D latch supports active-high/active-low enable. Flip-flop choices are D, JK, and T with rising/falling clock edge selection. A triangle marks a clock input; an inversion bubble marks active-low pins. Q̅ is visible by default and can be hidden.
+
+Flip-flops have independently optional preset and clear/reset inputs, hidden by default. Their names are fixed as PRE and CLR, with an active-high/active-low choice. Retain legacy saved label fields for schema compatibility, but do not expose name editing or use legacy text to override these fixed names. Preset and clear are placed on the left. Labels and marks document the symbol only.
+
+### Custom blocks
+
+A custom block is a rectangle with a center label and ordered input/output lists. New blocks start with label Block, inputs A and B, and output Y. Each side accepts up to 32 pins; at least one total pin is required. Pin names may be blank. Pin names allow 40 characters and center labels allow 200. Derive dimensions and intentional text wrapping from the pin lists and label so names and center text never overlap. Align all connector ends with the existing grid.
+
+Pin IDs are stable and independent of names or list order. Renaming/reordering preserves wires. The properties dialog displays the number of wires that will be removed by a pin deletion or type change, including orphaned junction connections. Apply performs pin changes, wire deletion, and junction cleanup atomically; Undo restores the full previous circuit.
+
+### Format compatibility
+
+Continue reading schema 1 without rewriting it on load. Schema 2 adds node types `sr-latch`, `d-latch`, `d-ff`, `jk-ff`, `t-ff`, and `custom`; optional `inputCount` for configurable gates; `pins: { inputs, outputs }` lists of `{ id, label }` for custom nodes; and `sequential` options for sequential symbols. Promote a circuit to schema 2 when it first uses an extended field or node. An unchanged properties application must not change its schema or create history. Preserve explicit source/target pin IDs and all existing safe-save, conflict-recovery, scale, and undo behavior. Reject malformed options and unsupported versions without modifying source.

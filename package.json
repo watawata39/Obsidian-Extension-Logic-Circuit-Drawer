@@ -1,6 +1,6 @@
 {
 	"name": "logic-circuits",
-	"version": "1.0.2",
+	"version": "1.1.0",
 	"description": "Draw and edit digital logic circuits directly inside Markdown notes.",
 	"main": "main.js",
 	"type": "module",

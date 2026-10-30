@@ -1,9 +1,9 @@
-import type { CircuitNode } from '../model/types';
+import type { NodeShape } from '../model/types';
 import { MIN_SCALE, MAX_SCALE } from '../model/circuit';
 import { GRID, nodeSnapReference, sizeFor, snapNodePosition, type Point } from './geometry';
 
 /** Keep the reference pin/center on the same lattice, even at the block edges. */
-export function constrainNodePosition(node: Pick<CircuitNode, 'type' | 'label'>, position: Point,
+export function constrainNodePosition(node: NodeShape, position: Point,
 	limits: { left: number; top: number; width: number }): Point {
 	const size = sizeFor(node);
 	const reference = nodeSnapReference(node);

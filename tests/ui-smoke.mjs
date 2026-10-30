@@ -221,6 +221,7 @@ try {
 	const branchStart = await center(page.locator('.logic-branch-handle'));
 	await page.mouse.move(branchStart.x, branchStart.y);
 	await page.mouse.down();
+	await page.mouse.move(branchStart.x + 4, branchStart.y, { steps: 2 });
 	await page.locator('.logic-branch-preview').waitFor();
 	const crossedWire = (await data()).edges.find(edge => edge.sourceNodeId === inputA.id);
 	const crossedPoint = await wirePoint(crossedWire.id);
@@ -256,6 +257,7 @@ try {
 	const cancellationStart = await center(cancellationHandle);
 	await page.mouse.move(cancellationStart.x, cancellationStart.y);
 	await page.mouse.down();
+	await page.mouse.move(cancellationStart.x + 4, cancellationStart.y, { steps: 2 });
 	await page.locator('.logic-branch-preview').waitFor();
 	const cancellationCrossedWire = beforeCancelledBranch.edges.find(edge => edge.sourceNodeId === inputB.id);
 	const cancellationCrossedPoint = await wirePoint(cancellationCrossedWire.id);

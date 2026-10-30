@@ -11,6 +11,8 @@ export interface DiagramInteractions {
 	toPoint: (point: { x: number; y: number }) => Point;
 	hoverWire: (edgeId: string, point: Point | null) => void;
 	startBranch: (edgeId: string, point: Point, event: PointerEvent) => void;
+	insertJunction: (edgeId: string, point: Point) => void;
+	selectWire: (edgeId: string, additive: boolean) => void;
 	label: (node: CircuitNode, value: string) => void;
 }
 

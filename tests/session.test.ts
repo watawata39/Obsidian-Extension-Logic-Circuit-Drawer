@@ -4,7 +4,8 @@ import { CircuitSession } from '../src/integration/session';
 import type { SessionHost } from '../src/integration/session';
 import type { NoteStore, BlockBaseline } from '../src/integration/note-store';
 import type { CircuitData } from '../src/model/types';
-import { newCircuit, parseCircuit, serializeCircuit } from '../src/model/circuit';
+import { connect, insertJunction, newCircuit, parseCircuit, replaceNode, serializeCircuit } from '../src/model/circuit';
+import { createNode } from '../src/model/components';
 import { scanCircuitBlocks, updateCircuitBlock } from '../src/storage/blocks';
 
 class MemoryStore {
@@ -27,8 +28,7 @@ class MemoryStore {
 		return Promise.resolve(result.block);
 	}
 }
-function setup() {
-	const circuit = newCircuit();
+function setup(circuit = newCircuit()) {
 	const store = new MemoryStore(circuit);
 	const host = { store: store as unknown as NoteStore, file: {}, activate: () => Promise.resolve() } as unknown as SessionHost;
 	const block = scanCircuitBlocks(store.text)[0]!;
@@ -131,6 +131,69 @@ void test('undo and redo are persisted completed actions', async () => {
 	session.redo();
 	await session.finish();
 	assert.equal(parseCircuit(scanCircuitBlocks(store.text)[0]!.content).view.preferredScale, 1.5);
+});
+
+void test('gate property edits persist schema migration and removed wires, with undo back to the original version 1 circuit', async () => {
+	const gate = createNode('and', { x: 160, y: 0 });
+	const source = createNode('input', { x: 0, y: 0 }, 'A');
+	const original = connect({ ...newCircuit(), nodes: [gate, source] }, source.id, 'out', gate.id, 'in-2');
+	const { session, store } = setup(original);
+	const saved = () => parseCircuit(scanCircuitBlocks(store.text)[0]!.content);
+	await session.startEditing();
+	const enlarged = replaceNode(original, { ...gate, inputCount: 4 });
+	const connected = connect(enlarged, source.id, 'out', gate.id, 'in-4');
+	session.commit(connected);
+	await session.flush();
+	assert.deepEqual(saved(), connected);
+	assert.equal(saved().schemaVersion, 2);
+
+	const smaller = replaceNode(connected, { ...gate, inputCount: 2 });
+	session.commit(smaller);
+	await session.flush();
+	assert.deepEqual(saved().edges, original.edges);
+	assert.equal(store.writes, 2, 'applying each complete properties change creates one write');
+
+	session.undo();
+	await session.flush();
+	assert.deepEqual(saved(), connected, 'undo restores the removed pin and its exact wire ID');
+	session.undo();
+	await session.flush();
+	assert.deepEqual(saved(), original, 'undoing the first extension restores schema 1 and original wires');
+	session.redo();
+	await session.flush();
+	assert.deepEqual(saved(), connected);
+	session.redo();
+	await session.finish();
+	assert.deepEqual(saved(), smaller);
+	assert.equal(store.writes, 6);
+	const reopened = new CircuitSession(session.host, scanCircuitBlocks(store.text)[0]!);
+	assert.deepEqual(reopened.getSnapshot().circuit, smaller);
+	assert.equal(reopened.getSnapshot().error, null);
+	assert.ok(store.text.startsWith('Before\n\n') && store.text.endsWith('\n\nAfter'));
+});
+
+void test('custom and sequential symbols plus properties survive note saves, undo, redo and session reopening', async () => {
+	for (const type of ['custom', 'd-ff'] as const) {
+		const { session, store, circuit } = setup();
+		await session.startEditing();
+		const placed = createNode(type, { x: 64, y: 32 });
+		const data: CircuitData = { ...circuit, schemaVersion: 2, nodes: [placed] };
+		session.commit(data);
+		const updated = replaceNode(data, type === 'custom'
+			? { ...placed, label: 'Adder', pins: { inputs: [...placed.pins!.inputs].reverse(), outputs: [{ ...placed.pins!.outputs[0]!, label: 'Sum' }] } }
+			: { ...placed, sequential: { clockEdge: 'falling', preset: { label: 'SET', activeLow: true }, clear: { label: 'RESET', activeLow: false } } });
+		session.commit(updated);
+		await session.flush();
+		assert.deepEqual(parseCircuit(scanCircuitBlocks(store.text)[0]!.content), updated);
+		session.undo(); session.undo();
+		await session.flush();
+		assert.deepEqual(parseCircuit(scanCircuitBlocks(store.text)[0]!.content), circuit);
+		session.redo(); session.redo();
+		await session.finish();
+		const reopened = new CircuitSession(session.host, scanCircuitBlocks(store.text)[0]!);
+		assert.deepEqual(reopened.getSnapshot().circuit, updated);
+		assert.equal(reopened.getSnapshot().error, null);
+	}
 });
 
 void test('an identical copy pasted after editing starts cannot use a stale Reading location', async () => {
@@ -261,4 +324,37 @@ void test('malformed-data errors remain visible when transient action errors are
 	assert.equal(malformed.getSnapshot().circuit, null);
 	assert.equal(store.text, source);
 	assert.equal(store.writes, 0);
+});
+
+void test('inserting and moving a routing junction save as separate undoable actions and survive reopening', async () => {
+	const gate = createNode('and', { x: 400, y: 0 });
+	const source = createNode('input', { x: 0, y: 0 }, 'A');
+	const circuit = connect({ ...newCircuit(), nodes: [source, gate] }, source.id, 'out', gate.id, 'in-1');
+	const { session, store } = setup(circuit);
+	const originalText = store.text;
+	await session.startEditing();
+	const split = insertJunction(circuit, circuit.edges[0]!.id, { x: 192, y: 16 });
+	session.commit(split);
+	await session.flush();
+	const junction = split.nodes.find(node => node.type === 'junction')!;
+	session.commit(insertJunction(split, split.edges[0]!.id, junction.position));
+	await session.flush();
+	assert.equal(store.writes, 1, 'reusing the existing routing junction creates no note write or history step');
+	const moved = { ...split, nodes: split.nodes.map(node => node.id === junction.id ? { ...node, position: { x: 240, y: 120 } } : node) };
+	session.commit(moved);
+	await session.flush();
+	assert.equal(store.writes, 2);
+	assert.deepEqual(parseCircuit(scanCircuitBlocks(store.text)[0]!.content), moved);
+	session.undo();
+	await session.flush();
+	assert.deepEqual(parseCircuit(scanCircuitBlocks(store.text)[0]!.content), split);
+	session.undo();
+	await session.flush();
+	assert.equal(store.text, originalText);
+	session.redo(); session.redo();
+	await session.finish();
+	const reopened = new CircuitSession(session.host, scanCircuitBlocks(store.text)[0]!);
+	assert.deepEqual(reopened.getSnapshot().circuit, moved);
+	assert.equal(reopened.getSnapshot().error, null);
+	assert.equal(store.writes, 6);
 });

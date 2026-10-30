@@ -28,7 +28,15 @@ export function CircuitWire({ id, source, target, sourceHandleId, targetHandleId
 		const related = eventElement(event.relatedTarget)?.closest('[data-circuit-edge]');
 		if (!interaction.connecting && related?.getAttribute('data-circuit-edge') !== id) interaction.hoverWire(id, null);
 	};
-	return <g className={`logic-wire${selected && interaction.editing ? ' is-selected' : ''}${interaction.editing && hovered && interaction.connecting ? ' is-branch-target' : ''}`}>
+	return <g className={`logic-wire${selected && interaction.editing ? ' is-selected' : ''}${interaction.editing && hovered && interaction.connecting ? ' is-branch-target' : ''}`} onClick={event => {
+		if (!interaction.editing) return;
+		event.preventDefault(); event.stopPropagation();
+		interaction.selectWire(id, event.shiftKey);
+	}} onDoubleClick={event => {
+		if (!interaction.editing) return;
+		event.preventDefault(); event.stopPropagation();
+		interaction.insertJunction(id, nearestOnWire(points, interaction.toPoint({ x: event.clientX, y: event.clientY })));
+	}}>
 		{interaction.editing && <title id={branchLabelId}>Branch wire</title>}
 		<path d={path} className="react-flow__edge-path" vectorEffect="non-scaling-stroke" />
 		<path d={path} fill="none" stroke="transparent" strokeWidth={Math.max(18, 18 / interaction.scale)} className="react-flow__edge-interaction" data-circuit-edge={id} onPointerMove={event => {

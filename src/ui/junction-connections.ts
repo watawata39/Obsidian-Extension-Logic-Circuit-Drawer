@@ -22,8 +22,8 @@ export function flowHandlesFor(source: CircuitNode, sourcePin: string, target: C
 /** Reverse gestures still route with an outgoing side and an incoming side. */
 export function connectionPreviewPoints(fromNode: CircuitNode, fromPin: string, toNode: CircuitNode | null | undefined, toPin: string | null | undefined, from: Point, to: Point): Point[] {
 	const reverse = fromNode.type === 'junction'
-		? Boolean(toNode && toNode.type !== 'junction' && pinsFor(toNode.type).outputs.includes(toPin ?? ''))
-		: pinsFor(fromNode.type).inputs.includes(fromPin);
+		? Boolean(toNode && toNode.type !== 'junction' && pinsFor(toNode).outputs.includes(toPin ?? ''))
+		: pinsFor(fromNode).inputs.includes(fromPin);
 	return reverse ? routedWirePoints(to, from, toNode?.type, fromNode.type).reverse() : routedWirePoints(from, to, fromNode.type, toNode?.type);
 }
 
@@ -45,10 +45,10 @@ export function normalizeFlowConnection(circuit: CircuitData, connection: {
 	let sourcePinId = logicalJunctionPin(circuit, connection.source, connection.sourceHandle ?? '', 'source');
 	let targetPinId = logicalJunctionPin(circuit, connection.target, connection.targetHandle ?? '', 'target');
 	if (source?.type === 'junction' && target && target.type !== 'junction') {
-		sourcePinId = pinsFor(target.type).outputs.includes(targetPinId) ? 'in-1' : 'out';
+		sourcePinId = pinsFor(target).outputs.includes(targetPinId) ? 'in-1' : 'out';
 	}
 	if (target?.type === 'junction' && source && source.type !== 'junction') {
-		targetPinId = pinsFor(source.type).inputs.includes(sourcePinId) ? 'out' : 'in-1';
+		targetPinId = pinsFor(source).inputs.includes(sourcePinId) ? 'out' : 'in-1';
 	}
 	return { sourceNodeId: connection.source, sourcePinId, targetNodeId: connection.target, targetPinId };
 }

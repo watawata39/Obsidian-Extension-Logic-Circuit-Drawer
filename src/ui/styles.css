@@ -145,3 +145,34 @@
 .markdown-source-view.mod-cm6 .cm-lang-logic-circuit > .embed-actions { display: none; }
 .markdown-source-view.mod-cm6 .cm-embed-block.cm-lang-logic-circuit:hover { box-shadow: none; overflow: visible; cursor: default; }
 @media (max-width: 480px) { .logic-circuit button.logic-tool { min-width: 37px; } }
+.logic-properties-backdrop { position: relative; z-index: 10; display: flex; justify-content: center; padding: 12px; border-bottom: 1px solid var(--logic-border); background: var(--logic-chrome); cursor: default; }
+.logic-properties { width: min(540px, 100%); max-height: min(720px, 70vh); overflow: auto; border: 1px solid var(--logic-border); border-radius: 8px; background: var(--logic-paper); color: var(--logic-ink); padding: 18px; font-size: 13px; }
+.logic-properties h3 { margin: 0 0 16px; font-size: 16px; font-weight: 600; }
+.logic-properties-field { display: flex; flex-direction: column; gap: 5px; margin: 0 0 12px; min-width: 0; }
+.logic-circuit .logic-properties input:not([type="checkbox"]), .logic-circuit .logic-properties select, .logic-circuit .logic-properties textarea { width: 100%; min-width: 0; height: 30px; padding: 4px 7px; border: 1px solid var(--logic-border); border-radius: 5px; background: var(--logic-paper); color: var(--logic-ink); font: inherit; box-shadow: none; }
+.logic-circuit .logic-properties textarea { height: auto; min-height: 55px; resize: vertical; }
+.logic-circuit .logic-properties input:focus-visible, .logic-circuit .logic-properties select:focus-visible, .logic-circuit .logic-properties textarea:focus-visible { outline: 2px solid var(--logic-accent); outline-offset: 1px; }
+.logic-properties-check { display: flex; align-items: center; gap: 7px; margin: 7px 0 12px; }
+.logic-properties-check input[type="checkbox"] { margin: 0; flex: 0 0 auto; }
+.logic-properties-pin-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.logic-properties-pins, .logic-properties-control { min-width: 0; margin: 0 0 12px; padding: 8px; border: 1px solid var(--logic-border); border-radius: 6px; }
+.logic-properties-pins legend, .logic-properties-control legend { padding: 0 4px; font-size: 12px; }
+.logic-properties-pin-row { display: flex; align-items: center; gap: 2px; margin-bottom: 6px; }
+.logic-circuit .logic-properties-pin-row input { flex: 1 1 0; }
+.logic-circuit .logic-properties-pin-row button { padding: 2px 4px; flex: 0 0 23px; min-width: 0; font-size: 14px; }
+.logic-properties-empty { display: block; color: var(--logic-muted); font-size: 11px; padding: 4px; }
+.logic-properties-control legend .logic-properties-check { margin: 0; }
+.logic-properties-warning { margin: 10px 0; padding: 8px; border-radius: 5px; color: var(--text-error, #c14545); background: var(--logic-chrome); font-size: 12px; }
+.logic-properties-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.logic-circuit .logic-properties-actions button { border-color: var(--logic-border); min-width: 66px; }
+@media (max-width: 480px) { .logic-properties-pin-columns { grid-template-columns: minmax(0, 1fr); } .logic-properties { padding: 12px; } }
+
+.logic-block-tool { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.logic-block-tool > span { display: block; min-width: 30px; border: 1px solid currentColor; border-radius: 1px; font-size: 11px; line-height: 19px; }
+.logic-circuit .logic-history-tools button.logic-properties-button { font-size: 12px; }
+.logic-block-label-editor { position: absolute; z-index: 6; background: var(--logic-paper); }
+.logic-circuit .logic-block-label-editor textarea.logic-label-input { min-height: 16px; line-height: 16px; }
+.logic-node-menu { position: absolute; z-index: 12; min-width: 108px; padding: 4px; border: 1px solid var(--logic-border); border-radius: 6px; background: var(--logic-paper); box-shadow: 0 3px 12px #0002; }
+.logic-node-menu button { width: 100%; text-align: left; }
+.logic-wire.is-selected .logic-branch-handle { fill: var(--logic-accent); stroke: var(--logic-accent); }
+.logic-object-junction.is-selected .logic-junction-dot { background: var(--logic-accent); }

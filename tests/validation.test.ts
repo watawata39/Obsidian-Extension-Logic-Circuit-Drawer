@@ -112,8 +112,8 @@ void test('malformed node and wire fields retain useful field descriptions witho
 void test('schema and scale errors avoid echoing arbitrary source identifiers and show percentages', () => {
 	const data = labelled();
 	readable(() => parse({ ...data, [missingId]: true }), /contains an unsupported field/);
-	readable(() => parse({ ...data, schemaVersion: missingId }), /^Unsupported circuit schema version\. This plugin supports version 1\.$/);
-	readable(() => parse({ ...data, schemaVersion: { id: missingId } }), /^Unsupported circuit schema version\. This plugin supports version 1\.$/);
-	readable(() => parse({ ...data, schemaVersion: 2 }), /schema version: 2/);
+	readable(() => parse({ ...data, schemaVersion: missingId }), /^Unsupported circuit schema version\. This plugin supports versions 1 and 2\.$/);
+	readable(() => parse({ ...data, schemaVersion: { id: missingId } }), /^Unsupported circuit schema version\. This plugin supports versions 1 and 2\.$/);
+	readable(() => parse({ ...data, schemaVersion: 3 }), /schema version: 3/);
 	readable(() => parse({ ...data, view: { preferredScale: 0.1 } }), /scale must be between 25% and 300%/);
 });

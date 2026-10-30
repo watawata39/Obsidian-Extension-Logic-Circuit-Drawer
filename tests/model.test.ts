@@ -183,7 +183,7 @@ void test('history restores all IDs and positions for compound branch actions an
 void test('parser rejects malformed or unsupported data rather than replacing it', () => {
 	assert.throws(() => parseCircuit('{broken'), /valid JSON/);
 	assert.throws(() => parseCircuit('null'), /object/);
-	assert.throws(() => parseCircuit(JSON.stringify({ ...base(), schemaVersion: 2 })), /version: 2/);
+	assert.throws(() => parseCircuit(JSON.stringify({ ...base(), schemaVersion: 3 })), /version: 3/);
 	assert.throws(() => parseCircuit(JSON.stringify({ ...base(), extra: true })), /unsupported field/);
 	assert.throws(() => parseCircuit(JSON.stringify({ ...base(), view: { preferredScale: 0 } })), /scale/);
 	assert.throws(() => parseCircuit(JSON.stringify({ ...base(), nodes: [{ ...base().nodes[2], label: 'Gate label' }] })), /only Input and Output/);

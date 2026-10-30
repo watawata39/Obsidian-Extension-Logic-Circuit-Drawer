@@ -3,8 +3,9 @@ import { CircuitEditor } from '../src/ui/CircuitEditor';
 import { CircuitSession } from '../src/integration/session';
 import type { SessionHost } from '../src/integration/session';
 import type { NoteStore, BlockBaseline } from '../src/integration/note-store';
-import type { CircuitData, GateType } from '../src/model/types';
+import type { CircuitData, GateType, NodeType } from '../src/model/types';
 import { newCircuit, pinsFor, serializeCircuit } from '../src/model/circuit';
+import { createNode } from '../src/model/components';
 import { scanCircuitBlocks, updateCircuitBlock } from '../src/storage/blocks';
 import { GRID, localPinPoint } from '../src/ui/geometry';
 
@@ -33,15 +34,20 @@ class BrowserStore {
 const store = new BrowserStore();
 let session: CircuitSession;
 let root: Root;
+let readOnly = false;
+const render = () => {
+	root = createRoot(document.getElementById('circuit')!);
+	root.render(<CircuitEditor session={session} readOnly={readOnly} />);
+};
 const mount = () => {
 	const host = { store: store as unknown as NoteStore, file: {}, activate: () => Promise.resolve() } as unknown as SessionHost;
 	session = new CircuitSession(host, scanCircuitBlocks(store.text)[0]!);
-	root = createRoot(document.getElementById('circuit')!);
-	root.render(<CircuitEditor session={session} />);
+	render();
 };
 mount();
 const show = async (circuit: CircuitData) => {
 	await session.finish(); root.unmount(); session.dispose();
+	readOnly = false;
 	store.text = `Before circuit\n\n\`\`\`logic-circuit\n${serializeCircuit(circuit)}\n\`\`\`\n\nAfter circuit`;
 	mount();
 };
@@ -59,6 +65,14 @@ const api = {
 	releaseWrites: () => store.releaseWrites(),
 	rejectCommit: () => { const data = session.getSnapshot().circuit!; session.commit({ ...data, nodes:[...data.nodes, data.nodes[0]!] }); },
 	remount: async () => { await session.finish(); root.unmount(); session.dispose(); mount(); },
+	refreshWidget: () => { root.unmount(); render(); },
+	setReadOnly: (value: boolean) => { readOnly = value; root.render(<CircuitEditor session={session} readOnly={readOnly} />); },
+	showWireWaypointFixture: () => {
+		const circuit = newCircuit();
+		circuit.nodes = [terminalAtPin('waypoint-input', 'input', 'A', 80, 96), terminalAtPin('waypoint-output', 'output', 'Y', 720, 96)];
+		circuit.edges = [{ id: 'waypoint-wire', sourceNodeId: 'waypoint-input', sourcePinId: 'out', targetNodeId: 'waypoint-output', targetPinId: 'in-1' }];
+		return show(circuit);
+	},
 	showAllGates: async () => {
 		const circuit = newCircuit();
 		const gates: GateType[] = ['and', 'or', 'not', 'nand', 'nor', 'xor', 'xnor'];
@@ -122,6 +136,36 @@ const api = {
 		circuit.nodes = [
 			{ id:'feedback-input', type:'input', label:'A', position:{ x:32, y:0 } },
 			{ id:'feedback-and', type:'and', position:{ x:208, y:64 } },
+		];
+		return show(circuit);
+	},
+	showComponentFixture: (type: NodeType) => {
+		const circuit = newCircuit();
+		const node = { ...createNode(type, { x: 208, y: 64 }), id: 'component' };
+		if (!['and', 'or', 'not', 'nand', 'nor', 'xor', 'xnor', 'input', 'output', 'junction'].includes(type)) circuit.schemaVersion = 2;
+		circuit.nodes = [node];
+		return show(circuit);
+	},
+	showConnectedCustomFixture: () => {
+		const circuit = newCircuit();
+		circuit.schemaVersion = 2;
+		const custom = { ...createNode('custom', { x: 208, y: 64 }), id: 'component', label: 'Adder', pins: {
+			inputs: [{ id: 'custom-a', label: 'A' }, { id: 'custom-b', label: 'B' }, { id: 'custom-cin', label: 'Cin' }],
+			outputs: [{ id: 'custom-sum', label: 'Sum' }, { id: 'custom-cout', label: 'Cout' }],
+		} };
+		const input = localPinPoint(custom, 'custom-a');
+		const sum = localPinPoint(custom, 'custom-sum');
+		const cout = localPinPoint(custom, 'custom-cout');
+		circuit.nodes = [custom,
+			terminalAtPin('component-input', 'input', 'A', 80, custom.position.y + input.y),
+			terminalAtPin('component-sum', 'output', 'Sum', 720, custom.position.y + sum.y),
+			terminalAtPin('component-cout', 'output', 'Carry', 720, custom.position.y + cout.y),
+			terminalAtPin('component-extra', 'output', 'Carry copy', 720, custom.position.y + cout.y + 128),
+		];
+		circuit.edges = [
+			{ id: 'component-in', sourceNodeId: 'component-input', sourcePinId: 'out', targetNodeId: custom.id, targetPinId: 'custom-a' },
+			{ id: 'component-out-sum', sourceNodeId: custom.id, sourcePinId: 'custom-sum', targetNodeId: 'component-sum', targetPinId: 'in-1' },
+			{ id: 'component-out-cout', sourceNodeId: custom.id, sourcePinId: 'custom-cout', targetNodeId: 'component-cout', targetPinId: 'in-1' },
 		];
 		return show(circuit);
 	},

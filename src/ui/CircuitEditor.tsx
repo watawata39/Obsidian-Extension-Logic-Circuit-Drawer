@@ -1,18 +1,23 @@
 import { applyNodeChanges, applyEdgeChanges, Background, BackgroundVariant, ConnectionMode, ConnectionLineType, ReactFlow, ReactFlowProvider, useReactFlow, useStoreApi, type Connection, type NodeChange, type EdgeChange } from '@xyflow/react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CircuitSession } from '../integration/session';
-import { connect, branchEdge, createId, deleteElements, MIN_SCALE, MAX_SCALE } from '../model/circuit';
-import type { CircuitData, CircuitNode, NodeType } from '../model/types';
+import { connect, branchEdge, insertJunction, deleteElements, replaceNode, MIN_SCALE, MAX_SCALE } from '../model/circuit';
+import type { CircuitData, CircuitNode, NodeShape, NodeType } from '../model/types';
 import { CircuitObject, type FlowNode } from './CircuitNode';
 import { CircuitWire, type FlowEdge } from './CircuitWire';
 import { DiagramContext } from './context';
 import { boundsFor, edgeWirePoints, GRID, nearestOnWire, PADDING, pathFor, routedWirePoints, sizeFor, terminalLabel, type Point } from './geometry';
-import { CircuitToolbar, PLACEMENT_MIME } from './Toolbar';
+import { CircuitToolbar, PLACEMENT_MIME, PLACEMENT_TOOLS } from './Toolbar';
 import { GateSymbol } from './GateSymbol';
 import { useBranching } from './useBranching';
 import { eventElement } from './dom';
 import { ScaleControl } from './ScaleControl';
 import { TerminalPreview } from './TerminalPreview';
+import { createNode, isBlockType, isConfigurable, requiresV2 } from '../model/components';
+import { BlockSymbol } from './BlockSymbol';
+import { NodeProperties } from './NodeProperties';
+import { NodeContextMenu } from './NodeContextMenu';
+import { getPropertyDraftStore, previewCircuitForProperties } from './property-drafts';
 import { CircuitConnection } from './CircuitConnection';
 import { constrainNodePosition, scaleStep } from './canvasLayout';
 import { usePlacementPreview } from './usePlacementPreview';
@@ -62,46 +67,75 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 	const [nodes, setNodes] = useState<FlowNode[]>(() => makeNodes(circuit));
 	const [edges, setEdges] = useState<FlowEdge[]>(() => makeEdges(circuit, undefined, wireName.id));
 	const [tool, setTool] = useState<NodeType | null>(null);
+	const propertiesStore = useMemo(() => getPropertyDraftStore(session), [session]);
+	const propertiesDraft = useSyncExternalStore(propertiesStore.subscribe, propertiesStore.getSnapshot);
+	const propertiesId = propertiesDraft?.nodeId ?? null;
+	const [nodeMenu, setNodeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+	const closeMenu = useCallback(() => { setNodeMenu(null); container.current?.focus({ preventScroll: true }); }, [container]);
 	const [preview, setPreview] = useState<{ position: Point; valid: boolean } | null>(null);
 	const [message, setMessage] = useTransientMessage(container);
 	const [connecting, setConnecting] = useState(false);
 	const connectionCancelled = useRef(false);
 	const dragMoved = useRef(false);
 	const [hovered, setHovered] = useState<{ edgeId: string; point: Point } | null>(null);
-	const locked = snapshot.conflict || Boolean(snapshot.error) || block.busy;
+	const locked = snapshot.conflict || Boolean(snapshot.error) || block.busy || propertiesId !== null;
 	const editorOpen = snapshot.editing && !readOnly;
 	const editing = editorOpen && !locked;
-	const bounds = useMemo(() => boundsFor(circuit), [circuit]);
+	const previewingProperties = editorOpen && !snapshot.conflict && propertiesDraft !== null;
+	const displayCircuit = useMemo(() => previewingProperties ? previewCircuitForProperties(circuit, propertiesDraft) : circuit, [circuit, propertiesDraft, previewingProperties]);
+	// Keep model sizes and stable preview objects: rebuilding unmeasured Flow
+	// nodes on dimension notifications would discard every wire's handle bounds.
+	const propertyNodes = useMemo(() => makeNodes(displayCircuit), [displayCircuit]);
+	const propertyEdges = useMemo(() => makeEdges(displayCircuit, undefined, wireName.id), [displayCircuit, wireName.id]);
+	const displayedNodes = previewingProperties ? propertyNodes : nodes;
+	const displayedEdges = previewingProperties ? propertyEdges : edges;
+	const bounds = useMemo(() => boundsFor(displayCircuit), [displayCircuit]);
 	// Saves can replace this entire React tree. Keep the editing origin on the
 	// session so empty space above moved nodes survives until editing ends.
 	const top = editorOpen ? session.getEditingOrigin(bounds.minY) : bounds.minY;
-	const liveBounds = useMemo(() => boundsFor({ ...circuit, nodes: nodes.map(node => ({ ...node.data.model, position: node.position })) }), [circuit, nodes]);
+	const liveBounds = useMemo(() => previewingProperties ? bounds : boundsFor({ ...circuit, nodes: nodes.map(node => ({ ...node.data.model, position: node.position })) }), [circuit, nodes, previewingProperties, bounds]);
 	const fitScale = Math.min(MAX_SCALE, Math.max(0.001, (width - PADDING * 2) / bounds.width));
 	const scale = Math.min(circuit.view.preferredScale, fitScale);
 	const viewport = useMemo(() => ({ x: PADDING - bounds.minX * scale, y: PADDING - top * scale, zoom: scale }), [bounds.minX, top, scale]);
-	const previewBottom = tool && preview?.valid ? preview.position.y + sizeFor({ type: tool, label: terminalLabel(circuit, tool) }).height : top;
+	const placementNode = useMemo(() => tool ? createNode(tool, { x: 0, y: 0 }, terminalLabel(circuit, tool)) : null, [tool, circuit]);
+	const previewBottom = placementNode && preview?.valid ? preview.position.y + sizeFor(placementNode).height : top;
 	const bottom = Math.max(liveBounds.maxY, previewBottom);
 	const height = Math.max(nodes.length || preview?.valid ? 64 : 128, Math.ceil((bottom - top) * scale + PADDING * 2));
 	// Notify the note host only after React has applied the node's new bounds.
-	useLayoutEffect(() => { if (writable()) blockActions?.afterResize?.(); }, [blockActions, editorOpen, height, nodes, writable]);
+	useLayoutEffect(() => { if (writable()) blockActions?.afterResize?.(); }, [blockActions, editorOpen, height, nodes, propertiesDraft, writable]);
 	const toPoint = useCallback((point: Point) => flow.screenToFlowPosition(point), [flow]);
 	const commit = useCallback((data: CircuitData) => { if (!writable()) return; setMessage(''); session.commit(data); }, [session, setMessage, writable]);
-	const branch = useBranching({ circuit, editing, toPoint, commit, error: setMessage });
+	const selectWire = (edgeId: string, additive: boolean) => {
+		if (!editing || tool || !writable()) return;
+		block.select(false);
+		if (!additive) setNodes(previous => previous.map(node => ({ ...node, selected: false })));
+		setEdges(previous => previous.map(edge => edge.id === edgeId ? { ...edge, selected: additive ? !edge.selected : true } : additive ? edge : { ...edge, selected: false }));
+		container.current?.focus({ preventScroll: true });
+	};
+	const branch = useBranching({ circuit, editing, toPoint, commit, onDragStart: () => setHovered(null), error: setMessage });
 	// A branch ends at a pin. Crossing another wire must not turn that wire
 	// into a connection target or leave a hover marker behind after release.
 	const wireHover = branch.branch ? { edgeId: branch.branch.edgeId, point: branch.branch.origin } : hovered;
 	const hoverWire = (edgeId: string, point: Point | null) => {
 		if (!branch.branch) setHovered(point ? { edgeId, point } : null);
 	};
-	const startBranch: typeof branch.start = (edgeId, point, event) => {
-		setHovered(null);
-		branch.start(edgeId, point, event);
-	};
+	const startBranch: typeof branch.start = (edgeId, point, event) => { branch.start(edgeId, point, event); };
 	const run = (action: () => void | Promise<void>) => {
 		if (!writable()) return;
 		setMessage('');
 		try { void Promise.resolve(action()).catch(error => setMessage(error instanceof Error ? error.message : 'The action could not be completed.')); }
 		catch (error) { setMessage(error instanceof Error ? error.message : 'The action could not be completed.'); }
+	};
+	const addJunction = (edgeId: string, point: Point) => {
+		if (!editing || tool) return;
+		run(() => {
+			const next = insertJunction(circuit, edgeId, { x: point.x - 8, y: point.y - 8 });
+			if (next === circuit) return;
+			const added = new Set(next.nodes.filter(node => !circuit.nodes.some(original => original.id === node.id)).map(node => node.id));
+			branch.cancel(); setHovered(null); block.select(false);
+			commit(next); setNodes(makeNodes(next, added)); setEdges(makeEdges(next, undefined, wireName.id));
+			container.current?.focus({ preventScroll: true });
+		});
 	};
 	const finishEditing = () => run(() => {
 		// Removing a focused Done button makes Obsidian blur and rebuild its
@@ -111,14 +145,19 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 	});
 	useEffect(() => {
 		if (!canvas.current) return;
-		const observer = new ResizeObserver(entries => { const entry = entries[0]; if (entry && entry.contentRect.width > 0) setWidth(entry.contentRect.width); });
+		const observer = new ResizeObserver(entries => {
+			for (const entry of entries) {
+				if (entry.contentRect.width <= 0) continue;
+				setWidth(entry.contentRect.width);
+			}
+		});
 		observer.observe(canvas.current);
 		return () => observer.disconnect();
 	}, []);
 	useEffect(() => {
 		setNodes(previous => makeNodes(circuit, new Set(previous.filter(node => node.selected).map(node => node.id))));
 		setEdges(previous => makeEdges(circuit, new Set(previous.filter(edge => edge.selected).map(edge => edge.id)), wireName.id));
-	}, [circuit, wireName.id]);
+	}, [circuit, wireName.id, previewingProperties]);
 	useEffect(() => {
 		const window = container.current?.ownerDocument.defaultView;
 		if (!window || !session.hasTransientError) return;
@@ -127,9 +166,9 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 	}, [container, session, snapshot.error, snapshot.actionErrorId]);
 	useEffect(() => { if (!editing) { setTool(null); setPreview(null); setHovered(null); setConnecting(false); } }, [editing]);
 	useEffect(() => { if (readOnly) blockActions?.cancelMove?.(); }, [readOnly, blockActions]);
-	const constrain = (position: Point, node: Pick<CircuitNode, 'type' | 'label'>) => constrainNodePosition(node, position, { left: bounds.minX, top, width: (width - PADDING * 2) / scale });
+	const constrain = (position: Point, node: NodeShape) => constrainNodePosition(node, position, { left: bounds.minX, top, width: (width - PADDING * 2) / scale });
 	const placement = (point: Point, type: NodeType) => {
-		const node = { type, label: terminalLabel(circuit, type) };
+		const node = placementNode?.type === type ? placementNode : createNode(type, { x: 0, y: 0 }, terminalLabel(circuit, type));
 		const size = sizeFor(node);
 		const position = constrain({ x: point.x - size.width / 2, y: point.y - size.height / 2 }, node);
 		const valid = position.x >= bounds.minX && position.x + size.width <= bounds.minX + (width - PADDING * 2) / scale && point.y >= top;
@@ -140,8 +179,10 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 		if (!writable()) return;
 		const next = placement(point, type);
 		if (!next.valid) { setMessage('Place the object inside the diagram bounds.'); return; }
-		const label = terminalLabel(circuit, type);
-		commit({ ...circuit, nodes: [...circuit.nodes, { id: createId(), type, position: next.position, ...(label === undefined ? {} : { label }) }] });
+		const node = { ...(placementNode?.type === type ? placementNode : createNode(type, next.position, terminalLabel(circuit, type))), position: next.position };
+		const data: CircuitData = { ...circuit, schemaVersion: requiresV2(node) ? 2 : circuit.schemaVersion, nodes: [...circuit.nodes, node] };
+		commit(data);
+		if (isBlockType(type)) setNodes(makeNodes(data, new Set([node.id])));
 		setTool(null); setPreview(null); container.current?.focus({ preventScroll: true });
 	};
 	const removeSelection = () => {
@@ -150,7 +191,18 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 		if (selectedNodes.length || selectedEdges.length) run(() => commit(deleteElements(circuit, selectedNodes, selectedEdges)));
 	};
 	const canDelete = nodes.some(node => node.selected) || edges.some(edge => edge.selected);
+	const selectedNodes = nodes.filter(node => node.selected);
+	const configurableNode = selectedNodes.length === 1 && !edges.some(edge => edge.selected) && isConfigurable(selectedNodes[0]!.data.model) ? selectedNodes[0]!.data.model : null;
+	const propertiesNode = circuit.nodes.find(node => node.id === propertiesId);
+	const configure = (node: CircuitNode) => {
+		if (!editing || !isConfigurable(node)) return;
+		block.select(false); setTool(null); setPreview(null); setNodeMenu(null); propertiesStore.open(node);
+		branch.cancel(); connectionCancelled.current = true; store.getState().cancelConnection(); setConnecting(false);
+	};
+	const closeProperties = () => { propertiesStore.close(); container.current?.focus({ preventScroll: true }); };
+	useEffect(() => { if (!editorOpen || snapshot.conflict) setNodeMenu(null); }, [editorOpen, snapshot.conflict]);
 	const changeNodes = (changes: NodeChange<FlowNode>[]) => {
+		if (previewingProperties) return;
 		if (!writable()) changes = changes.filter(change => change.type === 'dimensions');
 		const positions = changes.filter(change => change.type === 'position' && change.dragging !== undefined);
 		if (positions.length) blockActions?.beforeResize?.(positions.some(change => change.type === 'position' && change.dragging));
@@ -176,7 +228,7 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 		setTool(null); setPreview(null); branch.cancel(); connectionCancelled.current = true; store.getState().cancelConnection(); setConnecting(false);
 		container.current?.focus({ preventScroll: true });
 	};
-	return <div className={`logic-circuit${readOnly ? ' is-read-only' : ''}${editorOpen ? ' is-editing' : ''}${block.selected ? ' is-block-selected' : ''}`} ref={container} tabIndex={readOnly ? undefined : 0} role="group" aria-labelledby={name.id} data-circuit-id={circuit.circuitId} onContextMenu={readOnly ? undefined : block.contextMenu} onFocusCapture={readOnly ? undefined : event => {
+	return <div className={`logic-circuit${readOnly ? ' is-read-only' : ''}${editorOpen ? ' is-editing' : ''}${block.selected ? ' is-block-selected' : ''}`} ref={container} tabIndex={readOnly ? undefined : 0} role="group" aria-labelledby={name.id} data-circuit-id={circuit.circuitId} onContextMenu={readOnly ? undefined : event => { if (!eventElement(event.target)?.closest('.logic-properties-backdrop')) block.contextMenu(event); }} onFocusCapture={readOnly ? undefined : event => {
 		if (!writable()) return;
 		if (eventElement(event.target)?.closest('.react-flow__node,.react-flow__edge')) block.select(false);
 	}} onPointerDown={readOnly ? undefined : event => {
@@ -207,7 +259,7 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 		if (snapshot.editing || locked || eventElement(event.target)?.closest('button,input,textarea')) return;
 		event.preventDefault(); block.select(false); run(() => session.startEditing());
 	}} onKeyDown={readOnly ? undefined : event => {
-		if (!writable()) return;
+		if (!writable() || propertiesId !== null) return;
 		const editable = eventElement(event.target)?.closest('input,textarea,[contenteditable="true"]');
 		if (editable && container.current?.contains(editable)) return;
 		if (block.selected && (event.key === 'Delete' || event.key === 'Backspace')) { event.preventDefault(); event.stopPropagation(); block.remove(); return; }
@@ -234,19 +286,27 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 			</div>
 		</div>
 		</div>}
-		{editorOpen && <CircuitToolbar tool={tool} select={type => { setTool(type); setPreview(null); setMessage(''); }} canUndo={snapshot.canUndo} canRedo={snapshot.canRedo} undo={() => run(() => session.undo())} redo={() => run(() => session.redo())} canDelete={canDelete} remove={removeSelection} done={finishEditing} busy={snapshot.saving} locked={locked} />}
+		{editorOpen && <CircuitToolbar tool={tool} select={type => { setTool(type); setPreview(null); setMessage(''); }} canUndo={snapshot.canUndo} canRedo={snapshot.canRedo} undo={() => run(() => session.undo())} redo={() => run(() => session.redo())} canDelete={canDelete} remove={removeSelection} done={finishEditing} busy={snapshot.saving} locked={locked} canConfigure={Boolean(configurableNode)} configure={() => { if (configurableNode) configure(configurableNode); }} />}
 		{(message || snapshot.error || block.error) && <div className={`logic-notice${snapshot.error || block.error ? ' is-error' : ''}`} role="alert">{block.error || snapshot.error || message}{!readOnly && snapshot.conflict && <div className="logic-recovery"><button type="button" onClick={() => run(() => session.reload())}>Reload from note</button><button type="button" onClick={() => run(() => session.copyDraft())}>Copy draft</button></div>}</div>}
+		{editorOpen && !snapshot.conflict && propertiesNode && <NodeProperties key={propertiesNode.id} store={propertiesStore} node={propertiesNode} circuit={circuit} close={closeProperties} apply={node => run(() => { commit(replaceNode(circuit, node)); closeProperties(); })} />}
 		<div className={`logic-canvas${tool ? ' is-placing' : ''}`} ref={canvas} style={{ height }} onDragOver={event => {
 			if (!editing || !tool || !event.dataTransfer.types.includes(PLACEMENT_MIME)) return;
 			event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setPreview(placement(toPoint({ x: event.clientX, y: event.clientY }), tool));
 		}} onDrop={event => {
 			if (!editing) return;
 			const type = event.dataTransfer.getData(PLACEMENT_MIME) as NodeType;
-			if (!['and','or','not','nand','nor','xor','xnor','input','output'].includes(type)) return;
+			if (!PLACEMENT_TOOLS.includes(type)) return;
 			event.preventDefault(); event.stopPropagation(); place(toPoint({ x: event.clientX, y: event.clientY }), type);
 		}}>
-			<DiagramContext.Provider value={{ editing, scale, wireRoutes: liveBounds.wireRoutes, connecting, hovered: wireHover, toPoint, hoverWire, startBranch, label: (node, value) => run(() => commit({ ...circuit, nodes: circuit.nodes.map(item => item.id === node.id ? { ...item, label: value } : item) })) }}>
-				<ReactFlow<FlowNode, FlowEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={changeNodes} onEdgesChange={changeEdges} nodeDragThreshold={0} onNodeDragStart={() => { dragMoved.current = false; blockActions?.beforeResize?.(true); }} onNodeDrag={() => { dragMoved.current = true; }} onNodeDragStop={(_event, node, draggedNodes) => {
+			<DiagramContext.Provider value={{ editing, scale, wireRoutes: liveBounds.wireRoutes, connecting, hovered: wireHover, toPoint, hoverWire, startBranch, selectWire, insertJunction: addJunction, label: (node, value) => run(() => commit(replaceNode(circuit, { ...node, label: value }))) }}>
+				<ReactFlow<FlowNode, FlowEdge> nodes={displayedNodes} edges={displayedEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={changeNodes} onEdgesChange={changeEdges} onNodeDoubleClick={(event, node) => { if (editing && isConfigurable(node.data.model)) { event.stopPropagation(); configure(node.data.model); } }} onNodeContextMenu={(event, node) => {
+					if (!editing || !isConfigurable(node.data.model)) return;
+					event.preventDefault(); event.stopPropagation();
+					const rect = container.current?.getBoundingClientRect();
+					if (!rect) return;
+					block.select(false); setNodes(previous => previous.map(item => ({ ...item, selected: item.id === node.id }))); setEdges(previous => previous.map(item => ({ ...item, selected: false })));
+					setNodeMenu({ id: node.id, x: Math.max(0, Math.min(event.clientX - rect.left, rect.width - 112)), y: Math.max(0, Math.min(event.clientY - rect.top, rect.height - 40)) });
+				}} nodeDragThreshold={0} onNodeDragStart={() => { dragMoved.current = false; blockActions?.beforeResize?.(true); }} onNodeDrag={() => { dragMoved.current = true; }} onNodeDragStop={(_event, node, draggedNodes) => {
 					if (!editing || !writable() || !dragMoved.current) return;
 					// The stop event is authoritative even before controlled-node state flushes.
 					const positions = new Map([...draggedNodes, node].map(item => [item.id, constrain(item.position, item.data.model)]));
@@ -276,15 +336,16 @@ function Diagram({ session, snapshot, circuit, blockActions, readOnly, canEdit }
 				</ReactFlow>
 			</DiagramContext.Provider>
 			{!circuit.nodes.length && !tool && <div className="logic-empty">{readOnly ? 'An empty circuit.' : editorOpen ? 'Select a gate, then click to place it.' : 'An empty circuit. Double-click or select Edit to begin.'}</div>}
-			{editing && tool && preview && <div className={`logic-placement-preview${preview.valid ? '' : ' is-invalid'}`} style={{ left: viewport.x + preview.position.x * scale, top: viewport.y + preview.position.y * scale, width: sizeFor({ type: tool, label: terminalLabel(circuit, tool) }).width * scale, height: sizeFor({ type: tool, label: terminalLabel(circuit, tool) }).height * scale }}>{tool === 'input' || tool === 'output' ? <TerminalPreview type={tool} label={terminalLabel(circuit, tool) ?? ''} scale={scale} /> : <GateSymbol type={tool} />}</div>}
+			{editing && tool && placementNode && preview && <div className={`logic-placement-preview${preview.valid ? '' : ' is-invalid'}`} style={{ left: viewport.x + preview.position.x * scale, top: viewport.y + preview.position.y * scale, width: sizeFor(placementNode).width * scale, height: sizeFor(placementNode).height * scale }}>{tool === 'input' || tool === 'output' ? <TerminalPreview type={tool} label={placementNode.label ?? ''} scale={scale} /> : isBlockType(tool) ? <BlockSymbol node={placementNode} /> : <GateSymbol type={tool} node={placementNode} />}</div>}
 			{branch.branch && <svg className="logic-branch-preview" style={{ width, height }}><path d={pathFor(routedWirePoints(branch.branch.origin, branch.branch.pointer, 'junction').map(point => ({ x: viewport.x + point.x * scale, y: viewport.y + point.y * scale })))} /></svg>}
 		</div>
-		{editorOpen && <div className="logic-editor-hint"><span>{tool ? 'Click to place · Esc to cancel' : 'Drag pins to connect · Double-click terminal labels to edit'}</span><span className="logic-save-status" role="status">{snapshot.conflict ? 'Draft preserved' : snapshot.saving ? 'Saving…' : 'Saved'}</span></div>}
+		{editing && nodeMenu && <NodeContextMenu x={nodeMenu.x} y={nodeMenu.y} close={closeMenu} configure={() => { const node = circuit.nodes.find(node => node.id === nodeMenu.id); if (node) configure(node); }} />}
+		{editorOpen && <div className="logic-editor-hint"><span>{previewingProperties ? 'Apply to save · Cancel to restore' : tool ? 'Click to place · Esc to cancel' : 'Drag pins to connect · Double-click wires to add junctions'}</span><span className="logic-save-status" role="status">{snapshot.conflict ? 'Draft preserved' : snapshot.saving ? 'Saving…' : previewingProperties ? 'Preview only' : 'Saved'}</span></div>}
 	</div>;
 }
 
 function makeNodes(circuit: CircuitData, selected = new Set<string>()): FlowNode[] {
-	return circuit.nodes.map(node => ({ id: node.id, type: 'circuit', position: node.position, selected: selected.has(node.id), data: { model: node }, width: sizeFor(node).width, height: sizeFor(node).height }));
+	return circuit.nodes.map(node => ({ id: node.id, type: 'circuit', position: node.position, selected: selected.has(node.id), data: { model: node }, measured: sizeFor(node), width: sizeFor(node).width, height: sizeFor(node).height }));
 }
 function makeEdges(circuit: CircuitData, selected = new Set<string>(), wireLabelId?: string): FlowEdge[] {
 	const nodes = new Map(circuit.nodes.map(node => [node.id, node]));

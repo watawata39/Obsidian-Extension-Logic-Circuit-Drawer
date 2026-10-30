@@ -132,3 +132,20 @@ void test('fit bounds contain multiline terminal labels, junction markers and co
 		edgeWirePoints(source, edge.sourcePinId, target, edge.targetPinId).forEach(inside);
 	}
 });
+
+void test('configurable gates grow without moving their default connectors off the grid', () => {
+	for (const type of ['and', 'or', 'nand', 'nor', 'xor', 'xnor'] as const) {
+		for (const inputCount of [2, 3, 4, 8, 32]) {
+			const node = { type, inputCount };
+			const size = sizeFor(node);
+			assert.deepEqual(size, { width: 80, height: inputCount * 32 });
+			for (let index = 0; index < inputCount; index++) {
+				assert.deepEqual(localPinPoint(node, `in-${index + 1}`), { x: 0, y: 16 + index * 32 });
+			}
+			assert.deepEqual(localPinPoint(node, 'out'), { x: 80, y: size.height / 2 });
+			const position = snapNodePosition(node, { x: 101, y: 79 });
+			assert.equal((position.x + size.width / 2) % GRID, 0);
+			assert.equal((position.y + size.height / 2) % GRID, 0);
+		}
+	}
+});
